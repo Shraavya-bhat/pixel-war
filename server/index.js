@@ -1,63 +1,70 @@
-require("dotenv").config();
+import express from "express";
+import http from "http";
+import { Server } from "socket.io";
+import cors from "cors";
 
-const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
-const { PrismaClient } = require("@prisma/client");
-
-const prisma = new PrismaClient();
 const app = express();
+app.use(cors());
+
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*" },
+  cors: { origin: "*" }
 });
 
+const PORT = 5000;
+
 const GRID_SIZE = 30;
+const TOTAL_TILES = GRID_SIZE * GRID_SIZE;
+const WIN_COUNT = 50;
 
-// Initialize grid
-async function initGrid() {
-  const count = await prisma.tile.count();
+let tiles = Array(TOTAL_TILES).fill(null);
+let players = {};
+let winner = null;
 
-  if (count === 0) {
-    const tiles = [];
-
-    for (let x = 0; x < GRID_SIZE; x++) {
-      for (let y = 0; y < GRID_SIZE; y++) {
-        tiles.push({
-          x,
-          y,
-          color: "#1e1e1e",
-        });
-      }
-    }
-
-    await prisma.tile.createMany({ data: tiles });
-    console.log("Grid initialized");
-  }
-}
-
-initGrid();
-
-io.on("connection", async (socket) => {
+io.on("connection", (socket) => {
   console.log("User connected");
 
-  const tiles = await prisma.tile.findMany();
-  socket.emit("init", tiles);
+  socket.on("join", ({ name, color }) => {
+    players[socket.id] = { name, color, score: 0 };
 
-  socket.on("click", async ({ x, y }) => {
-    const updated = await prisma.tile.updateMany({
-      where: { x, y },
-      data: { color: "#4da6ff" },
-    });
+    socket.emit("init", { tiles, players, winner });
+    io.emit("players", players);
+  });
 
-    const tile = await prisma.tile.findFirst({
-      where: { x, y },
-    });
+  socket.on("placeTile", (index) => {
+    if (winner) return;
+    if (tiles[index] !== null) return;
 
-    io.emit("update", tile);
+    const player = players[socket.id];
+    if (!player) return;
+
+    tiles[index] = player.color;
+    player.score++;
+
+    if (player.score >= WIN_COUNT) {
+      winner = player.name;
+    }
+
+    io.emit("update", { tiles, players, winner });
+  });
+
+  socket.on("reset", () => {
+    if (!winner) return;
+
+    tiles = Array(TOTAL_TILES).fill(null);
+    winner = null;
+
+    Object.values(players).forEach(p => p.score = 0);
+
+    io.emit("update", { tiles, players, winner });
+  });
+
+  socket.on("disconnect", () => {
+    delete players[socket.id];
+    io.emit("players", players);
   });
 });
 
-server.listen(5000, () => {
-  console.log("Server running on port 5000");
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
